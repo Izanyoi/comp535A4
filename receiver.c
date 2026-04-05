@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <sys/time.h>
 #include "multicast.h"
 #include "message.h"
 
@@ -12,6 +13,13 @@
 #define MAX_CHUNKS 65536
 
 bool received[MAX_CHUNKS];
+long last_nack[MAX_CHUNKS] = {0};
+
+static long long get_time_ms() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
 
 int main()
 {
@@ -124,24 +132,30 @@ int main()
 
             // Detect gaps and predictably send requests for them
             int nacks_sent = 0;
+            long curr = get_time_ms();
+
             for (uint32_t i = 0; i < highest_seen; i++) {
                 if (!received[i]) {
-                    msg_header nack;
-                    memset(&nack, 0, sizeof(nack));
 
-                    nack.msg_type = MSG_TYPE_NACK;
-                    nack.seq_num = i;
-                    nack.file_id = current_file_id; 
+                    if(curr - last_nack[i] > 100) {
+                        
+                        msg_header nack;
+                        memset(&nack, 0, sizeof(nack));
 
-                    multicast_send(m, &nack, sizeof(nack));
+                        nack.msg_type = MSG_TYPE_NACK;
+                        nack.seq_num = i;
+                        nack.file_id = current_file_id; 
 
-                    if (nacks_sent == 0) {
-                         printf("NACK sent for chunk %u\n", i);
+                        multicast_send(m, &nack, sizeof(nack));
+
+                        if (nacks_sent == 0) {
+                            printf("NACK sent for chunk %u\n", i);
+                        }
+                        nacks_sent++;
+                        
+                        // suppress storm, handle sequentially cleanly
+                        if (nacks_sent > 5) break;
                     }
-                    nacks_sent++;
-                    
-                    // suppress storm, handle sequentially cleanly
-                    if (nacks_sent > 5) break;
                 }
             }
 
